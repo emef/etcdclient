@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <functional>
 #include "rapidjson/document.h"
 
 using namespace std;
@@ -58,6 +59,42 @@ namespace etcd {
      */
     unique_ptr<PutResponse> putDirectory(string key, int ttl);
 
+    /**
+     * Waits for the next change in key and returns its new value.
+     */
+    unique_ptr<GetResponse> wait(string key);
+
+    /*
+     * Waits for the next change in key or anything inside the
+     * directory at key if recursive is true.
+     */
+    unique_ptr<GetResponse> wait(string key, bool recursive);
+
+    /**
+     * Waits for the next change in key, specifying the exact
+     * modifiedIndex to retrieve.
+     */
+    unique_ptr<GetResponse> wait(string key, int waitIndex);
+
+    /**
+     * Waits for the next change in key or the directory at key
+     * while specifying the exact modifiedIndex to retrieve.
+     */
+    unique_ptr<GetResponse> wait(string key, bool recursive, int waitIndex);
+
+    /**
+     * Polls for changes in key, calling the callback each time it
+     * is updated. Note that this function blocks forever.
+     */
+    void poll(string key, function<void (GetResponse*)> cb);
+
+    /**
+     * Polls for changes in key or anything in the directory at key,
+     * calling the callback each time there is an update. Note that
+     * this method blocks forever.
+     */
+    void poll(string key, bool recursive, function<void (GetResponse*)> cb);
+
   private:
     uint hostNo = 0;
     vector<Host> hosts;
@@ -84,43 +121,53 @@ namespace etcd {
    */
   class Node {
   public:
-    /**
-     * Leaf-node constructor.
-     */
-    Node(string key,
-         string value,
-         int modifiedIndex,
-         int createdIndex) :
-      key(key),
-      value(value),
-      nodes(),
-      isDir(false),
-      modifiedIndex(modifiedIndex),
-      createdIndex(createdIndex) {}
+    static Node* leaf(string key,
+                      string value,
+                      string expiration,
+                      int ttl,
+                      int modifiedIndex,
+                      int createdIndex);
 
-    Node(string key,
-         vector<Node> nodes,
-         int modifiedIndex,
-         int createdIndex) :
-      key(key),
-      value(),
-      nodes(nodes),
-      isDir(true),
-      modifiedIndex(modifiedIndex),
-      createdIndex(createdIndex) {}
+    static Node* dir(string key,
+                     vector<Node> nodes,
+                     string expiration,
+                     int ttl,
+                     int modifiedIndex,
+                     int createdIndex);
 
     string getKey() const { return key; }
     string getValue() const { return value; }
     vector<Node> getNodes() const { return nodes; }
+    string getExpiration() const { return expiration; }
+    int getTtl() const { return ttl; }
     int getModifiedIndex() const { return modifiedIndex; }
     int getCreatedIndex() const { return createdIndex; }
     bool isDirectory() const { return isDir; }
 
   private:
+    Node(string key,
+         string value,
+         vector<Node> nodes,
+         bool isDir,
+         string expiration,
+         int ttl,
+         int modifiedIndex,
+         int createdIndex) :
+      key(key),
+      value(value),
+      nodes(nodes),
+      isDir(isDir),
+      expiration(expiration),
+      ttl(ttl),
+      modifiedIndex(modifiedIndex),
+      createdIndex(createdIndex) {}
+
     string key;
     string value;
     vector<Node> nodes;
     bool isDir;
+    string expiration;
+    int ttl;
     int modifiedIndex;
     int createdIndex;
   };
@@ -154,13 +201,8 @@ namespace etcd {
    */
   class GetResponse {
   public:
-    static GetResponse *success(unique_ptr<Node> node) {
-      return new GetResponse(move(node), NULL);
-    }
-
-    static GetResponse *failure(unique_ptr<ResponseError> error) {
-      return new GetResponse(NULL, move(error));
-    }
+    static GetResponse* success(unique_ptr<Node> node);
+    static GetResponse* failure(unique_ptr<ResponseError> error);
 
     Node* getNode() const { return node.get(); }
     ResponseError* getError() const { return error.get(); }
@@ -182,13 +224,9 @@ namespace etcd {
   class PutResponse {
   public:
     static PutResponse* success(unique_ptr<Node> node,
-                                unique_ptr<Node> prevNode) {
-      return new PutResponse(move(node), move(prevNode), NULL);
-    }
+                                unique_ptr<Node> prevNode);
 
-    static PutResponse* failure(unique_ptr<ResponseError> error) {
-      return new PutResponse(NULL, NULL, move(error));
-    }
+    static PutResponse* failure(unique_ptr<ResponseError> error);
 
     Node* getNode() const { return node.get(); }
     Node* getPrevNode() const { return prevNode.get(); }

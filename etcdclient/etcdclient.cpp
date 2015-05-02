@@ -3,6 +3,7 @@
 #include <sstream>
 #include <vector>
 #include <memory>
+#include <functional>
 #include <string>
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
@@ -24,8 +25,7 @@ int writer(char *data, size_t size, size_t nmemb, string *buffer){
   return result;
 }
 
-template <typename fun>
-unique_ptr<Document> with_curl(fun process) {
+unique_ptr<Document> with_curl(function<void (CURL*)> process) {
   CURL *curl;
   CURLcode res;
   curl = curl_easy_init();
@@ -98,31 +98,43 @@ vector<Node> readChildNodes(Value &parentNode) {
 
 unique_ptr<Node> readNode(Value &root) {
   Node *node;
+  string key = root["key"].GetString();
+  int modifiedIndex = root["modifiedIndex"].GetInt();
+  int createdIndex = root["createdIndex"].GetInt();
+  string expiration = "";
+  int ttl = -1;
+
+  if (root.HasMember("expiration")) {
+    expiration = root["expiration"].GetString();
+  }
+
+  if (root.HasMember("ttl")) {
+    ttl = root["ttl"].GetInt();
+  }
+
   if (!isDirectory(root)) {
-    node = new Node(
-      root["key"].GetString(),
+    node = Node::leaf(
+      key,
       root["value"].GetString(),
-      root["modifiedIndex"].GetInt(),
-      root["createdIndex"].GetInt());
+      expiration,
+      ttl,
+      modifiedIndex,
+      createdIndex);
   } else {
-    node = new Node(
-      root["key"].GetString(),
+    node = Node::dir(
+      key,
       readChildNodes(root),
-      root["modifiedIndex"].GetInt(),
-      root["createdIndex"].GetInt());
+      expiration,
+      ttl,
+      modifiedIndex,
+      createdIndex);
   }
 
   return move(unique_ptr<Node>(node));
 }
 
-unique_ptr<GetResponse> Session::get(string key) {
-  return get(key, false);
-}
-
-unique_ptr<GetResponse> Session::get(string key, bool recursive) {
-  Host &host = nextHost();
+unique_ptr<GetResponse> getHelper(string url) {
   unique_ptr<Document> resp = with_curl([=](CURL *curl) {
-      string url = base_url(host, key) + (recursive ? "?recursive=true" : "");
       curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     });
 
@@ -135,6 +147,76 @@ unique_ptr<GetResponse> Session::get(string key, bool recursive) {
   Value &root = (*resp)["node"];
   GetResponse *r = GetResponse::success(move(readNode(root)));
   return unique_ptr<GetResponse>(r);
+}
+
+string buildQuerystring(vector<string> parts);
+
+unique_ptr<GetResponse> Session::get(string key) {
+  Host& host = nextHost();
+  string url = base_url(host, key);
+  return getHelper(url);
+}
+
+unique_ptr<GetResponse> Session::get(string key, bool recursive) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << (recursive ? "?recursive=true" : "");
+  return getHelper(url.str());
+}
+
+unique_ptr<GetResponse> Session::wait(string key) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << "?wait=true";
+  return getHelper(url.str());
+}
+
+unique_ptr<GetResponse> Session::wait(string key, bool recursive) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << "?wait=true";
+  if (recursive) {
+    url << "&recursive=true";
+  }
+  return getHelper(url.str());
+}
+
+unique_ptr<GetResponse> Session::wait(string key, int waitIndex) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << "?wait=true&waitIndex=" << waitIndex;
+  return getHelper(url.str());
+}
+
+unique_ptr<GetResponse> Session::wait(string key, bool recursive, int waitIndex) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << "?wait=true&waitIndex=" << waitIndex;
+  if (recursive) {
+    url << "&recursive=true";
+  }
+  return getHelper(url.str());
+}
+
+void Session::poll(string key, function<void (GetResponse*)> cb) {
+  poll(key, false, cb);
+}
+
+void Session::poll(string key,
+                   bool recursive,
+                   function<void (GetResponse*)> cb) {
+  while (1) {
+    Host& host = nextHost();
+    ostringstream url;
+    url << base_url(host, key) << "?wait=true";
+
+    if (recursive) {
+      url << "&recursive=true";
+    }
+
+    unique_ptr<GetResponse> r = getHelper(url.str());
+    cb(r.get());
+  }
 }
 
 unique_ptr<PutResponse> putToURL(string url, string value, int ttl);
@@ -181,6 +263,75 @@ unique_ptr<PutResponse> putToURL(string url, string value, int ttl) {
   return unique_ptr<PutResponse>(r);
 }
 
+string buildQuerystring(vector<string> parts) {
+  if (parts.size() == 0) {
+    return "";
+  }
+
+  ostringstream qs;
+  qs << "?";
+
+  size_t nParts = parts.size();
+  for (size_t i = 0; i < nParts; i++) {
+    if (i != 0) {
+      qs << "&";
+    }
+    qs << parts[i];
+  }
+
+  return qs.str();
+}
+
+Node* Node::leaf(string key,
+                 string value,
+                 string expiration,
+                 int ttl,
+                 int modifiedIndex,
+                 int createdIndex) {
+
+  return new Node(key,
+                  value,
+                  vector<Node>(),
+                  false,
+                  expiration,
+                  ttl,
+                  modifiedIndex,
+                  createdIndex);
+}
+
+Node* Node::dir(string key,
+                vector<Node> nodes,
+                string expiration,
+                int ttl,
+                int modifiedIndex,
+                int createdIndex) {
+
+  return new Node(key,
+              "",
+              nodes,
+              true,
+              expiration,
+              ttl,
+              modifiedIndex,
+              createdIndex);
+}
+
+GetResponse* GetResponse::success(unique_ptr<Node> node) {
+  return new GetResponse(move(node), NULL);
+}
+
+GetResponse* GetResponse::failure(unique_ptr<ResponseError> error) {
+  return new GetResponse(NULL, move(error));
+}
+
+PutResponse* PutResponse::success(unique_ptr<Node> node,
+                                  unique_ptr<Node> prevNode) {
+  return new PutResponse(move(node), move(prevNode), NULL);
+}
+
+PutResponse* PutResponse::failure(unique_ptr<ResponseError> error) {
+  return new PutResponse(NULL, NULL, move(error));
+}
 
 ostream& operator<<(ostream &os, const Value& value) {
   StringBuffer sb;
@@ -191,18 +342,33 @@ ostream& operator<<(ostream &os, const Value& value) {
 }
 
 ostream& operator<<(ostream& os, const Node& node) {
+  os << "Node(key=\"" << node.getKey() << "\"";
+
   if (node.isDirectory()) {
-    os << "Node(key=\"" << node.getKey() << "\", nodes=[";
+    os << ", nodes=[";
     for (int i = 0, size = node.getNodes().size(); i < size; i++) {
       os << node.getNodes()[i];
       if (i != size - 1) {
         os << ", ";
       }
     }
-    os << "])";
+    os << "]";
   } else {
-    os << "Node(key=\"" << node.getKey() << "\", value=\"" << node.getValue() << "\")";
+    os << ", value=\"" << node.getValue();
   }
+
+  os << ", modifiedIndex=" << node.getModifiedIndex();
+  os << ", createdIndex=" << node.getCreatedIndex();
+
+  if (node.getExpiration() != "") {
+    os << ", expiration=\"" << node.getExpiration() << "\"";
+  }
+
+  if (node.getTtl() != -1) {
+    os << ", ttl=" << node.getTtl();
+  }
+
+  os << ")";
 
   return os;
 }

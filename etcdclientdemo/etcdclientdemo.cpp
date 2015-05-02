@@ -17,7 +17,7 @@ int main(int argc, char *argv[]) {
   cout << s.get("/dir/nested/c")->getNode() << endl;
 
   s.put("/put", "nyah");
-  unique_ptr<PutResponse> putResp = s.put("/put1", "hah!");
+  unique_ptr<PutResponse> putResp = s.put("/put1", "hah!", 100);
 
   if (putResp->getPrevNode() != NULL) {
     cout << "prev: " << putResp->getPrevNode() << endl;
@@ -26,5 +26,4 @@ int main(int argc, char *argv[]) {
   cout << "node: " << putResp->getNode() << endl;
 
   cout << s.put("/dir/nested", "overwrite!")->getNode() << endl;
-
 }
