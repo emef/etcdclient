@@ -4,8 +4,10 @@
 
 using namespace etcd;
 
+vector<string> listQueueValues(Session& s, string key);
+
 int main(int argc, char *argv[]) {
-  vector<Host> host_list { Host("localhost", 4001l) };
+  vector<Host> host_list { Host("localhost", 2379l) };
   Session s(host_list);
   s.put("/message", "test message");
   unique_ptr<GetResponse> resp = s.get("/message");
@@ -26,4 +28,39 @@ int main(int argc, char *argv[]) {
   cout << "node: " << putResp->getNode() << endl;
 
   cout << s.put("/dir/nested", "overwrite!")->getNode() << endl;
+
+  s.deleteQueue("/queue");
+  s.addToQueue("/queue", "apples");
+  s.addToQueue("/queue", "oranges");
+  s.addToQueue("/queue", "grapes", 1000);
+
+  vector<string> values = listQueueValues(s, "/queue");
+  for_each(values.begin(), values.end(), [](string value) {
+      cout << value << " ";
+    });
+  cout << endl;
+
+}
+
+vector<string> listQueueValues(Session& s, string key) {
+  vector<string> values;
+  unique_ptr<GetResponse> r = s.listQueue(key);
+  if (r->getNode() == NULL) {
+    return values;
+  }
+
+  vector<Node> queueNodes = r->getNode()->getNodes();
+  vector<string> queueValues;
+  queueValues.reserve(queueNodes.size());
+
+  auto getValue = [](Node const& node) {
+    return node.getValue();
+  };
+
+  transform(queueNodes.begin(),
+            queueNodes.end(),
+            back_inserter(queueValues),
+            getValue);
+
+  return queueValues;
 }

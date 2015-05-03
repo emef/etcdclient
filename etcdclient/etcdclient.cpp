@@ -15,6 +15,8 @@ using namespace std;
 using namespace rapidjson;
 using namespace etcd;
 
+string jsonToString(const Value& value);
+
 /* curl uses a callback to read urls. It passes the result buffer reference as an argument */
 int writer(char *data, size_t size, size_t nmemb, string *buffer){
   int result = 0;
@@ -149,8 +151,6 @@ unique_ptr<GetResponse> getHelper(string url) {
   return unique_ptr<GetResponse>(r);
 }
 
-string buildQuerystring(vector<string> parts);
-
 unique_ptr<GetResponse> Session::get(string key) {
   Host& host = nextHost();
   string url = base_url(host, key);
@@ -219,33 +219,7 @@ void Session::poll(string key,
   }
 }
 
-unique_ptr<PutResponse> putToURL(string url, string value, int ttl);
-unique_ptr<PutResponse> Session::put(string key, string value) {
-  Host &host = nextHost();
-  string url = base_url(host, key);
-  return putToURL(url, value, -1);
-}
-
-unique_ptr<PutResponse> Session::put(string key, string value, int ttl) {
-  Host &host = nextHost();
-  string url = base_url(host, key);
-  return putToURL(url, value, ttl);
-}
-
-unique_ptr<PutResponse> putToURL(string url, string value, int ttl) {
-  // todo: encode value
-  string postData = "value=" + value;
-
-  if (ttl > 0) {
-    postData += "&ttl=" + to_string(ttl);
-  }
-
-  unique_ptr<Document> resp = with_curl([=](CURL *curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
-      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
-    });
-
+unique_ptr<PutResponse> readPutResponse(unique_ptr<Document> resp) {
   ResponseError *error = checkForError(*resp);
   if (error != NULL) {
     PutResponse *r = PutResponse::failure(unique_ptr<ResponseError>(error));
@@ -263,23 +237,86 @@ unique_ptr<PutResponse> putToURL(string url, string value, int ttl) {
   return unique_ptr<PutResponse>(r);
 }
 
-string buildQuerystring(vector<string> parts) {
-  if (parts.size() == 0) {
-    return "";
-  }
+unique_ptr<PutResponse> putAndPostHelper(string url,
+                                         string postData,
+                                         bool usePUT) {
 
-  ostringstream qs;
-  qs << "?";
+  unique_ptr<Document> resp = with_curl([=](CURL *curl) {
+      if (usePUT) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+      }
+      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.c_str());
+    });
 
-  size_t nParts = parts.size();
-  for (size_t i = 0; i < nParts; i++) {
-    if (i != 0) {
-      qs << "&";
-    }
-    qs << parts[i];
-  }
+  return readPutResponse(move(resp));
+}
 
-  return qs.str();
+
+unique_ptr<PutResponse> Session::put(string key, string value) {
+  Host &host = nextHost();
+  string url = base_url(host, key);
+  ostringstream postData;
+  postData << "value=" << value;
+  return putAndPostHelper(url, postData.str(), true);
+}
+
+unique_ptr<PutResponse> Session::put(string key, string value, int ttl) {
+  Host &host = nextHost();
+  string url = base_url(host, key);
+  ostringstream postData;
+  postData << "value=" << value << "&ttl=" << ttl;
+  return putAndPostHelper(url, postData.str(), true);
+}
+
+unique_ptr<PutResponse> Session::addToQueue(string key, string value) {
+  Host &host = nextHost();
+  string url = base_url(host, key);
+  ostringstream postData;
+  postData << "value=" << value;
+  return putAndPostHelper(url, postData.str(), false);
+}
+
+unique_ptr<PutResponse> Session::addToQueue(string key, string value, int ttl) {
+  Host &host = nextHost();
+  string url = base_url(host, key);
+  ostringstream postData;
+  postData << "value=" << value << "&ttl=" << ttl;
+  return putAndPostHelper(url, postData.str(), false);
+}
+
+unique_ptr<GetResponse> Session::listQueue(string key) {
+  Host &host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << "?recursive=true&sorted=true";
+  return getHelper(url.str());
+}
+
+unique_ptr<PutResponse> deleteHelper(string url) {
+  unique_ptr<Document> resp = with_curl([=](CURL *curl) {
+      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    });
+
+  return readPutResponse(move(resp));
+}
+
+unique_ptr<PutResponse> Session::deleteKey(string key) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key);
+  return deleteHelper(url.str());
+}
+
+unique_ptr<PutResponse> Session::deleteDirectory(string key) {
+  Host& host = nextHost();
+  ostringstream url;
+  url << base_url(host, key) << "?dir=true&recursive=true";
+  return deleteHelper(url.str());
+}
+
+unique_ptr<PutResponse> Session::deleteQueue(string key) {
+  return deleteDirectory(key);
 }
 
 Node* Node::leaf(string key,
@@ -333,12 +370,11 @@ PutResponse* PutResponse::failure(unique_ptr<ResponseError> error) {
   return new PutResponse(NULL, NULL, move(error));
 }
 
-ostream& operator<<(ostream &os, const Value& value) {
+string jsonToString(const Value& value) {
   StringBuffer sb;
   PrettyWriter<StringBuffer> writer(sb);
   value.Accept(writer);
-  os << sb.GetString();
-  return os;
+  return sb.GetString();
 }
 
 ostream& operator<<(ostream& os, const Node& node) {

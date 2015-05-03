@@ -15,6 +15,7 @@ namespace etcd {
   class Node;
   class GetResponse;
   class PutResponse;
+  class ResponseError;
 
   /**
    * etcd client session, supports most of the etcd API
@@ -94,6 +95,27 @@ namespace etcd {
      * this method blocks forever.
      */
     void poll(string key, bool recursive, function<void (GetResponse*)> cb);
+
+    /**
+     * Send POST request to etcd server to atomically add an in-order
+     * key to a directory specified by key.
+     */
+    unique_ptr<PutResponse> addToQueue(string key, string value);
+
+    /**
+     * Send POST request to etcd server to atomically add an in-order
+     * key to a directory specified by key, specifying a ttl.
+     */
+    unique_ptr<PutResponse> addToQueue(string key, string value, int ttl);
+
+    /**
+     * Lists an in-order queue in sorted order.
+     */
+    unique_ptr<GetResponse> listQueue(string key);
+
+    unique_ptr<PutResponse> deleteKey(string key);
+    unique_ptr<PutResponse> deleteDirectory(string key);
+    unique_ptr<PutResponse> deleteQueue(string key);
 
   private:
     uint hostNo = 0;
@@ -246,7 +268,6 @@ namespace etcd {
   };
 }
 
-ostream& operator<<(ostream& os, const rapidjson::Value& node);
 ostream& operator<<(ostream& os, const etcd::Node& node);
 ostream& operator<<(ostream& os, const etcd::Node* node);
 
