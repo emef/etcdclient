@@ -115,13 +115,20 @@ unique_ptr<Node> readNode(Value &root) {
   }
 
   if (!isDirectory(root)) {
+    string value = "";
+
+    if (root.HasMember("value")) {
+      value = root["value"].GetString();
+    }
+
     node = Node::leaf(
       key,
-      root["value"].GetString(),
+      value,
       expiration,
       ttl,
       modifiedIndex,
       createdIndex);
+
   } else {
     node = Node::dir(
       key,
@@ -132,7 +139,7 @@ unique_ptr<Node> readNode(Value &root) {
       createdIndex);
   }
 
-  return move(unique_ptr<Node>(node));
+  return unique_ptr<Node>(node);
 }
 
 unique_ptr<GetResponse> getHelper(string url) {
@@ -147,6 +154,7 @@ unique_ptr<GetResponse> getHelper(string url) {
   }
 
   Value &root = (*resp)["node"];
+  cout << jsonToString(root) << endl;
   GetResponse *r = GetResponse::success(move(readNode(root)));
   return unique_ptr<GetResponse>(r);
 }
@@ -205,17 +213,18 @@ void Session::poll(string key, function<void (GetResponse*)> cb) {
 void Session::poll(string key,
                    bool recursive,
                    function<void (GetResponse*)> cb) {
-  while (1) {
-    Host& host = nextHost();
-    ostringstream url;
-    url << base_url(host, key) << "?wait=true";
 
-    if (recursive) {
-      url << "&recursive=true";
+  unique_ptr<GetResponse> r = wait(key, recursive);
+
+  while (1) {
+    if (r->getError() != NULL) {
+      break;
     }
 
-    unique_ptr<GetResponse> r = getHelper(url.str());
     cb(r.get());
+
+    int waitIndex = 1 + r->getNode()->getModifiedIndex();
+    r = wait(key, recursive, waitIndex);
   }
 }
 

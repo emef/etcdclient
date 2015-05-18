@@ -40,6 +40,9 @@ int main(int argc, char *argv[]) {
     });
   cout << endl;
 
+  s.poll("/poll", [](GetResponse* r) {
+      cout << r->getNode() << endl;
+    });
 }
 
 vector<string> listQueueValues(Session& s, string key) {
